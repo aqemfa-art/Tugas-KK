@@ -8,7 +8,7 @@ from sklearn.preprocessing import MinMaxScaler, LabelEncoder
 from sklearn.cluster import KMeans, AgglomerativeClustering
 from sklearn.metrics import silhouette_score
 from sklearn.decomposition import PCA
-from scipy.cluster.hierarchy import linkage, dendrogram
+from scipy.cluster.hierarchy import linkage, dendrogram, fcluster
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Preformatted, Table, TableStyle, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -54,7 +54,7 @@ X_scaled_df = pd.DataFrame(X_scaled, columns=df_selected.columns)
 # Buat folder outputs
 os.makedirs("outputs", exist_ok=True)
 
-# === Tambahan output preview ===
+# === output  ===
 print("=== Data setelah seleksi fitur & encoding ===")
 display(df_selected.head())
 
@@ -217,21 +217,45 @@ plt.tight_layout()
 plt.savefig("outputs/clustering_comparison.png", bbox_inches='tight', dpi=150)
 plt.close()
 
-# === Dendrogram HAC ===
-# Gunakan sampel subset data agar dendrogram tidak terlalu padat
+
+# === Dendrogram HAC otomatis sesuai k terbaik ===
 N_SAMPLE = min(100, X_scaled_df.shape[0])
 idx = np.random.RandomState(RNG).choice(X_scaled_df.shape[0], size=N_SAMPLE, replace=False)
 X_sample = X_scaled_df.iloc[idx]
 
 Z = linkage(X_sample, method='ward', metric='euclidean')
+
+# Ambil k terbaik dari hasil silhouette HAC
+k_optimal = best_k_silhouette_hac  # misalnya 3
+
+# Tentukan threshold otomatis untuk menghasilkan k cluster
+clusters = fcluster(Z, k_optimal, criterion="maxclust")
+
+# Ambil nilai distance cutoff = jarak penggabungan terakhir sebelum jumlah cluster = k_optimal
+# (di linkage matrix Z, kolom ke-2 adalah jarak)
+# urutkan jarak penggabungan, ambil yang ke-(n-k_optimal) untuk cutoff
+distance_threshold = Z[-(k_optimal-1), 2]
+
 plt.figure(figsize=(15, 8))
-dendrogram(Z, truncate_mode='lastp', p=15, show_leaf_counts=True,
-          leaf_rotation=90, leaf_font_size=10, show_contracted=True)
-plt.title('Dendrogram for Hierarchical Clustering (Ward Linkage)')
+dendrogram(
+    Z,
+    truncate_mode='lastp',
+    p=15,
+    show_leaf_counts=True,
+    leaf_rotation=90,
+    leaf_font_size=10,
+    show_contracted=True,
+    color_threshold=distance_threshold
+)
+
+plt.axhline(y=distance_threshold, color='black', linestyle='--')
+plt.title(f'Dendrogram for HAC (Ward Linkage, k={k_optimal})')
 plt.xlabel('Sample index or (cluster size)')
 plt.ylabel('Distance')
 plt.savefig("outputs/dendrogram.png", bbox_inches='tight', dpi=150)
 plt.close()
+
+print(f"✅ Dendrogram digambar ulang dengan cutoff otomatis untuk k={k_optimal}, threshold={distance_threshold:.2f}")
 
 
 # 5. Save results to CSV
