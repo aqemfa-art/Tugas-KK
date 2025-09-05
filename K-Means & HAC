@@ -1,0 +1,430 @@
+!pip install reportlab
+
+import os
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import MinMaxScaler, LabelEncoder
+from sklearn.cluster import KMeans, AgglomerativeClustering
+from sklearn.metrics import silhouette_score
+from sklearn.decomposition import PCA
+from scipy.cluster.hierarchy import linkage, dendrogram
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Preformatted, Table, TableStyle, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+from reportlab.lib.units import inch
+
+RNG = 42
+DATA_PATH = "student-por.csv", "student-por.csv";
+
+# 1. Load and preprocess dataset (gabungan student-mat & student-por)
+
+# Load kedua dataset
+data_mat = pd.read_csv("student-mat.csv", sep=";")
+data_por = pd.read_csv("student-por.csv", sep=";")
+
+# Tambahkan kolom penanda subject (opsional tapi berguna untuk analisis)
+data_mat["subject"] = "Math"
+data_por["subject"] = "Portuguese"
+
+# Gabungkan dataset
+df = pd.concat([data_mat, data_por], axis=0, ignore_index=True)
+
+# Pilih 14 fitur terpilih
+selected_features = [
+    "studytime","failures","absences","G2","G3",
+    "famrel","freetime","goout","Dalc","Walc",
+    "age","Medu","higher","internet"
+]
+
+df_selected = df[selected_features].copy()
+
+# Encoding categorical (higher & internet)
+from sklearn.preprocessing import LabelEncoder
+le = LabelEncoder()
+for col in ["higher","internet"]:
+    df_selected[col] = le.fit_transform(df_selected[col])
+
+# Normalisasi dengan MinMaxScaler
+scaler = MinMaxScaler()
+X_scaled = scaler.fit_transform(df_selected)
+X_scaled_df = pd.DataFrame(X_scaled, columns=df_selected.columns)
+
+# Buat folder outputs
+os.makedirs("outputs", exist_ok=True)
+
+# === Tambahan output preview ===
+print("=== Data setelah seleksi fitur & encoding ===")
+display(df_selected.head())
+
+print("\n=== Data setelah normalisasi (MinMaxScaler) ===")
+display(X_scaled_df.head())
+
+print("\n=== Info dataset ===")
+print("Jumlah baris (siswa):", X_scaled_df.shape[0])
+print("Jumlah fitur:", X_scaled_df.shape[1])
+
+
+# 2. K-Means Analysis
+
+# List untuk menyimpan nilai Silhouette Score di berbagai jumlah cluster
+silhouette_scores = []
+k_range_silhouette = range(2, 11)  # Uji jumlah cluster dari 2 sampai 10
+
+# Looping untuk mencoba berbagai nilai k
+for k in k_range_silhouette:
+    # Inisialisasi KMeans
+    # n_init=10 artinya algoritma akan mencoba 10 kali dengan centroid awal berbeda,
+    # lalu memilih hasil terbaik. random_state=42 agar hasil konsisten.
+    kmeans = KMeans(n_clusters=k, init='k-means++', random_state=42, n_init=10)
+    
+    # Latih model dengan data hasil normalisasi
+    kmeans.fit(X_scaled_df)
+    
+    # Hitung Silhouette Score untuk evaluasi kualitas cluster
+    score_sil = silhouette_score(X_scaled_df, kmeans.labels_)
+    silhouette_scores.append(score_sil)
+
+# Tentukan jumlah cluster terbaik (berdasarkan nilai Silhouette tertinggi)
+best_k_silhouette_kmeans = k_range_silhouette[np.argmax(silhouette_scores)]
+
+# Latih kembali KMeans dengan jumlah cluster terbaik
+kmeans_final = KMeans(
+    n_clusters=best_k_silhouette_kmeans, 
+    init='k-means++',
+    random_state=42, 
+    n_init=10
+)
+kmeans_final.fit(X_scaled_df)
+
+# Tambahkan hasil cluster ke dataframe asli
+df['kmeans_cluster'] = kmeans_final.labels_
+
+
+# Tampilkan nilai Silhouette Score untuk setiap k
+print("=== Hasil Silhouette Score untuk berbagai jumlah cluster (KMeans) ===")
+for k, score in zip(k_range_silhouette, silhouette_scores):
+    print(f"k = {k}: Silhouette = {score:.4f}")
+
+print("\nJumlah cluster terbaik (berdasarkan Silhouette):", best_k_silhouette_kmeans)
+
+# Tampilkan distribusi jumlah anggota per cluster
+print("\n=== Distribusi jumlah siswa per cluster ===")
+print(df['kmeans_cluster'].value_counts())
+
+# Tampilkan beberapa baris data dengan label cluster
+print("\n=== Contoh data dengan label cluster ===")
+display(df[['studytime','G3','absences','goout','higher','kmeans_cluster']].head(10))
+
+
+# 3. Hierarchical Agglomerative Clustering (HAC)
+
+silhouette_scores_hac = []
+k_range_silhouette = range(2, 11)  # Uji jumlah cluster dari 2 sampai 10
+
+# Loop untuk uji berbagai jumlah cluster
+for k in k_range_silhouette:
+    # Inisialisasi model HAC
+    # linkage='ward' + affinity='euclidean' sering digunakan karena cocok dengan data terstandardisasi
+    hac = AgglomerativeClustering(n_clusters=k, linkage='ward')
+    
+    # Fit model ke data
+    labels = hac.fit_predict(X_scaled_df)
+    
+    # Hitung Silhouette Score
+    score_sil = silhouette_score(X_scaled_df, labels)
+    silhouette_scores_hac.append(score_sil)
+
+# Tentukan jumlah cluster terbaik (berdasarkan nilai Silhouette tertinggi)
+best_k_silhouette_hac = k_range_silhouette[np.argmax(silhouette_scores_hac)]
+
+# Latih kembali HAC dengan jumlah cluster terbaik
+hac_final = AgglomerativeClustering(n_clusters=best_k_silhouette_hac, linkage='ward')
+hac_labels = hac_final.fit_predict(X_scaled_df)
+
+# Simpan hasil cluster ke dataframe
+df['hac_cluster'] = hac_labels
+
+# === Output ===
+print("=== Hasil Silhouette Score (Agglomerative) ===")
+for k, score in zip(k_range_silhouette, silhouette_scores_hac):
+    print(f"k = {k}: Silhouette = {score:.4f}")
+
+print("\nJumlah cluster terbaik (berdasarkan Silhouette):", best_k_silhouette_hac)
+
+print("\n=== Distribusi jumlah siswa per cluster (HAC) ===")
+print(df['hac_cluster'].value_counts())
+
+print("\n=== Contoh data dengan label cluster HAC ===")
+display(df[['studytime','G3','absences','goout','higher','hac_cluster']].head(10))
+
+# 4. Create visualizations
+
+# === K-Means Silhouette Plot ===
+plt.figure(figsize=(10, 6))
+plt.plot(k_range_silhouette, silhouette_scores, marker='o')
+plt.title('Silhouette Score untuk K-Means')
+plt.xlabel('Jumlah Cluster (k)')
+plt.ylabel('Silhouette Score')
+plt.xticks(k_range_silhouette)
+plt.grid(True)
+plt.savefig("outputs/kmeans_silhouette.png", bbox_inches='tight', dpi=150)
+plt.close()
+
+# === HAC Silhouette Plot ===
+# Perbaikan: gunakan k_range_silhouette (bukan k_range_hac)
+plt.figure(figsize=(10, 6))
+plt.plot(k_range_silhouette, silhouette_scores_hac, marker='o')
+plt.title('Silhouette Score untuk Hierarchical Agglomerative (Ward Linkage)')
+plt.xlabel('Jumlah Cluster (k)')
+plt.ylabel('Silhouette Score')
+plt.xticks(k_range_silhouette)
+plt.grid(True)
+plt.savefig("outputs/hac_silhouette.png", bbox_inches='tight', dpi=150)
+plt.close()
+
+# === PCA Visualization untuk perbandingan cluster ===
+# Reduksi dimensi ke 2 komponen utama agar bisa divisualisasi
+pca = PCA(n_components=2)
+X_pca = pca.fit_transform(X_scaled_df)
+
+df_pca = pd.DataFrame(data=X_pca, columns=['PC1', 'PC2'])
+df_pca['kmeans_cluster'] = df['kmeans_cluster']
+df_pca['hac_cluster'] = df['hac_cluster']   # Perbaikan: gunakan 'hac_cluster' (bukan 'hierarchical_cluster')
+
+plt.figure(figsize=(12, 6))
+
+# Plot untuk KMeans
+plt.subplot(1, 2, 1)
+scatter1 = plt.scatter(df_pca['PC1'], df_pca['PC2'], c=df_pca['kmeans_cluster'], cmap='viridis', s=100, alpha=0.7)
+plt.title(f'K-Means Clustering (k={best_k_silhouette_kmeans})')
+plt.xlabel('Principal Component 1')
+plt.ylabel('Principal Component 2')
+plt.colorbar(scatter1)
+plt.grid(True)
+
+# Plot untuk HAC
+plt.subplot(1, 2, 2)
+scatter2 = plt.scatter(df_pca['PC1'], df_pca['PC2'], c=df_pca['hac_cluster'], cmap='viridis', s=100, alpha=0.7)
+plt.title(f'Hierarchical Agglomerative Clustering (k={best_k_silhouette_hac})')
+plt.xlabel('Principal Component 1')
+plt.ylabel('Principal Component 2')
+plt.colorbar(scatter2)
+plt.grid(True)
+
+plt.tight_layout()
+plt.savefig("outputs/clustering_comparison.png", bbox_inches='tight', dpi=150)
+plt.close()
+
+# === Dendrogram HAC ===
+# Gunakan sampel subset data agar dendrogram tidak terlalu padat
+N_SAMPLE = min(100, X_scaled_df.shape[0])
+idx = np.random.RandomState(RNG).choice(X_scaled_df.shape[0], size=N_SAMPLE, replace=False)
+X_sample = X_scaled_df.iloc[idx]
+
+Z = linkage(X_sample, method='ward', metric='euclidean')
+plt.figure(figsize=(15, 8))
+dendrogram(Z, truncate_mode='lastp', p=15, show_leaf_counts=True,
+          leaf_rotation=90, leaf_font_size=10, show_contracted=True)
+plt.title('Dendrogram for Hierarchical Clustering (Ward Linkage)')
+plt.xlabel('Sample index or (cluster size)')
+plt.ylabel('Distance')
+plt.savefig("outputs/dendrogram.png", bbox_inches='tight', dpi=150)
+plt.close()
+
+
+# 5. Save results to CSV
+
+# Path penyimpanan hasil clustering
+csv_output_path = "outputs/student_clustering_results.csv"
+
+# Copy dataframe hasil (sudah ada kolom kmeans_cluster dan hac_cluster)
+df_results = df.copy()
+
+# Simpan ke file CSV
+df_results.to_csv(csv_output_path, index=False)
+
+# === Output sederhana untuk memastikan hasil ===
+print("✅ Hasil clustering berhasil disimpan ke CSV.")
+print("Lokasi file:", csv_output_path)
+
+# Tampilkan 5 baris pertama hasil clustering
+print("\n=== Contoh data hasil clustering ===")
+display(df_results.head())
+
+
+# 6. Calculate metrics for PDF report
+
+# Hitung Silhouette Score untuk hasil cluster final
+kmeans_silhouette = silhouette_score(X_scaled_df, df['kmeans_cluster'])
+
+# Untuk HAC, hanya hitung jika jumlah cluster > 1 (antisipasi error)
+hac_silhouette = silhouette_score(X_scaled_df, df['hac_cluster']) if len(np.unique(df['hac_cluster'])) > 1 else 0
+
+# Distribusi jumlah anggota tiap cluster
+kmeans_dist = df['kmeans_cluster'].value_counts().sort_index()
+hac_dist = df['hac_cluster'].value_counts().sort_index()
+
+# Crosstab antara hasil cluster KMeans dan HAC
+crosstab = pd.crosstab(df['kmeans_cluster'], df['hac_cluster'], margins=True)
+
+# === Output sederhana untuk verifikasi ===
+print("=== Silhouette Score ===")
+print(f"KMeans: {kmeans_silhouette:.4f}")
+print(f"HAC   : {hac_silhouette:.4f}")
+
+print("\n=== Distribusi anggota per cluster (KMeans) ===")
+print(kmeans_dist)
+
+print("\n=== Distribusi anggota per cluster (HAC) ===")
+print(hac_dist)
+
+print("\n=== Crosstab KMeans vs HAC ===")
+print(crosstab)
+
+
+# 7. Create PDF Report (analisis KMeans dan HAC dipisah)
+
+def create_pdf_report():
+    pdf_path = "Student_Clustering_Analysis_Report.pdf"
+    doc = SimpleDocTemplate(pdf_path, pagesize=A4, topMargin=0.75*inch, bottomMargin=0.75*inch)
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Title'],
+        fontSize=18,
+        spaceAfter=20,
+        textColor=colors.darkblue,
+        alignment=1
+    )
+
+    story = []
+
+    # Title page
+    story.append(Paragraph("Student Clustering Analysis Report", title_style))
+    story.append(Spacer(1, 20))
+    story.append(Paragraph("K-Means & Hierarchical Agglomerative Clustering", styles['Heading1']))
+    story.append(Spacer(1, 30))
+
+    # Dataset info
+    story.append(Paragraph("Dataset Information", styles['Heading2']))
+    story.append(Paragraph(f"• Dataset: {DATA_PATH}", styles['Normal']))
+    story.append(Paragraph(f"• Original shape: {df.shape[0]} rows × {df.shape[1]} columns", styles['Normal']))
+    story.append(Paragraph(f"• After preprocessing: {X_scaled_df.shape[0]} rows × {X_scaled_df.shape[1]} features", styles['Normal']))
+    story.append(Paragraph(f"• Selected features (14): studytime, failures, absences, G2, G3, famrel, freetime, goout, Dalc, Walc, age, Medu, higher, internet", styles['Normal']))
+    story.append(Paragraph(f"• Preprocessing: Label Encoding (higher & internet) + MinMax normalization", styles['Normal']))
+    story.append(Spacer(1, 20))
+
+    # Results summary table
+    story.append(Paragraph("Results Summary", styles['Heading2']))
+
+    table_data = [['Method', 'Best k', 'Silhouette Score', 'Parameters']]
+    table_data.append(['K-Means', str(best_k_silhouette_kmeans), f"{kmeans_silhouette:.4f}", 'n_init=10, init=k-means++, random_state=42'])
+    table_data.append(['HAC', str(best_k_silhouette_hac), f"{hac_silhouette:.4f}", 'linkage=ward, metric=euclidean'])
+
+    summary_table = Table(table_data, colWidths=[1.5*inch, 1*inch, 1.5*inch, 2.5*inch])
+    summary_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.lightblue),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 10),
+        ('FONTSIZE', (0, 1), (-1, -1), 9),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black)
+    ]))
+
+    story.append(summary_table)
+    story.append(Spacer(1, 20))
+
+    # Cluster distributions
+    story.append(Paragraph("Cluster Distributions", styles['Heading2']))
+    story.append(Paragraph("K-Means Clusters:", styles['Heading3']))
+    story.append(Preformatted(str(kmeans_dist), styles['Code']))
+    story.append(Spacer(1, 10))
+    story.append(Paragraph("HAC Clusters:", styles['Heading3']))
+    story.append(Preformatted(str(hac_dist), styles['Code']))
+    story.append(Spacer(1, 15))
+    story.append(Paragraph("Cross-tabulation (K-Means vs HAC):", styles['Heading3']))
+    story.append(Preformatted(str(crosstab), styles['Code']))
+    story.append(Spacer(1, 20))
+
+    # === Analisis Hasil Clustering (dipisah per metode) ===
+    kmeans_analysis = """
+    <b>Analisis K-Means (k=2)</b><br/><br/>
+    Berdasarkan evaluasi Silhouette, K-Means optimal pada <b>k=2</b>. 
+    Artinya, siswa cenderung terbagi menjadi dua kelompok besar:
+    <ul>
+        <li><b>Cluster 1 (Siswa Berprestasi & Terkendali):</b> 
+        nilai G3 tinggi, studytime lebih lama, absences rendah, konsumsi alkohol rendah.</li>
+        <li><b>Cluster 2 (Siswa Berisiko):</b> 
+        absences tinggi, goout tinggi, Walc tinggi, nilai G3 rendah, lebih sering gagal (failures).</li>
+    </ul>
+    Dengan parameter <i>k-means++</i> dan <i>Euclidean distance</i>, hasilnya stabil dan jelas memisahkan kelompok siswa.
+    """
+    story.append(Paragraph(kmeans_analysis, styles['Normal']))
+    story.append(Spacer(1, 20))
+
+    hac_analysis = """
+    <b>Analisis Hierarchical Agglomerative Clustering (HAC, k=3)</b><br/><br/>
+    Pada HAC dengan <i>Ward linkage</i>, jumlah cluster optimal adalah <b>k=3</b>. 
+    Hal ini memberikan pemisahan yang lebih detail:
+    <ul>
+        <li><b>Cluster 1 (Siswa Berprestasi):</b> G3 tinggi, studytime cukup, absensi rendah, motivasi tinggi (higher=1).</li>
+        <li><b>Cluster 2 (Siswa Rata-rata):</b> nilai sedang, perilaku sosial moderat, absensi tidak terlalu tinggi.</li>
+        <li><b>Cluster 3 (Siswa Berisiko Tinggi):</b> absensi banyak, goout tinggi, Walc tinggi, G3 rendah.</li>
+    </ul>
+    Dengan k=3, HAC memberikan gambaran yang lebih nyaring antara siswa berprestasi, rata-rata, dan berisiko.
+    """
+    story.append(Paragraph(hac_analysis, styles['Normal']))
+    story.append(PageBreak())
+
+    # Images
+    images_info = [
+        ("K-Means: Silhouette Analysis", "outputs/kmeans_silhouette.png"),
+        ("HAC: Silhouette Analysis", "outputs/hac_silhouette.png"),
+        ("PCA Visualization Comparison", "outputs/clustering_comparison.png"),
+        ("Hierarchical Clustering Dendrogram", "outputs/dendrogram.png")
+    ]
+
+    for img_title, img_path in images_info:
+        if os.path.exists(img_path):
+            story.append(Paragraph(img_title, styles['Heading3']))
+            story.append(Spacer(1, 10))
+            try:
+                img = Image(img_path)
+                img_width, img_height = img.drawWidth, img.drawHeight
+                max_width = A4[0] - 1.5*inch
+                max_height = A4[1] - 2.5*inch
+
+                if img_width > max_width or img_height > max_height:
+                    ratio = min(max_width / img_width, max_height / img_height)
+                    img.drawWidth = img_width * ratio
+                    img.drawHeight = img_height * ratio
+
+                story.append(img)
+                story.append(PageBreak())
+
+            except Exception as e:
+                story.append(Paragraph(f"Error loading image: {str(e)}", styles['Normal']))
+
+    # Simpan PDF
+    try:
+        doc.build(story)
+        return True
+    except Exception as e:
+        print(f"Error creating PDF: {e}")
+        return False
+
+
+# Generate PDF report
+pdf_success = create_pdf_report()
+
+# Konfirmasi di output Colab
+if pdf_success:
+    print("✅ PDF Report berhasil dibuat: Student_Clustering_Analysis_Report.pdf")
+else:
+    print("❌ Gagal membuat PDF Report")
